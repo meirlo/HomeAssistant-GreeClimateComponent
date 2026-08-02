@@ -126,6 +126,14 @@ async def async_unload_entry(hass, entry):
 class GreeClimate(ClimateEntity):
     # Language is retrieved from translation key
     _attr_translation_key = "gree"
+    # Use the modern entity-naming model so this entity is named after its
+    # device (the name the user set at setup) and HA does not prepend the area
+    # name. This also makes the climate entity consistent with the integration's
+    # other entities (sensor/switch/select/number), which all use it.
+    _attr_has_entity_name = True
+    # ``name = None`` marks this as the device's primary entity, so its friendly
+    # name equals the device name.
+    _attr_name = None
 
     def __init__(
         self,
@@ -633,12 +641,6 @@ class GreeClimate(ClimateEntity):
                 _LOGGER.error("Encryption version %s is not implemented." % self.encryption_version)
         else:
             await self.SyncState()
-
-    @property
-    def name(self):
-        _LOGGER.debug(f"{self._name}: name() = {self._name}")
-        # Return the name of the climate device.
-        return self._name
 
     @property
     def temperature_unit(self):
