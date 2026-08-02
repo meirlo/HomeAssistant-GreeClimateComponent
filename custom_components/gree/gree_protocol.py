@@ -611,14 +611,14 @@ async def get_subunits_list(mac_addr, ip_addr, port):
     Fetch the list of sub-devices for a Gree gateway device.
 
     The gateway answers a ``subList`` query with the list of connected units.
-    The ``list`` is returned at the top level of the response (it is a
-    protocol-level query, not wrapped in the encrypted ``pack`` channel), so we
-    parse it directly and only fall back to decrypting a ``pack`` if present.
+    Depending on firmware the ``list`` is either returned at the top level of
+    the response, or wrapped in an encrypted ``pack``. When it is encrypted the
+    gateway uses its own *bound* device key (not the generic key), so we bind
+    to the gateway first and decrypt the response with the returned key.
     """
     try:
-        # subList is a protocol-level query. Send it unencrypted (no pack),
-        # mirroring the official greeclimate implementation. ``i:0`` marks a
-        # normal (non-bind/scan) request.
+        # subList is a protocol-level query. Send it unencrypted (no pack).
+        # ``i:0`` marks a normal (non-bind/scan) request.
         jsonPayloadToSend = (
             f'{{"cid":"app","i":0,"t":"subList","tcid":"{str(mac_addr)}","uid":0}}'
         )
@@ -627,20 +627,39 @@ async def get_subunits_list(mac_addr, ip_addr, port):
         if not received_json:
             return {"list": []}
 
-        # The list may be at the top level (unencrypted query response) ...
+        # The list may be at the top level (some firmwares) ...
         if isinstance(received_json.get("list"), list):
             _LOGGER.debug(f"get_subunits_list: found {len(received_json['list'])} sub-units (top-level)")
             return {"list": received_json["list"]}
 
-        # ... or inside an encrypted pack (some firmwares). Decrypt and parse.
+        # ... or inside an encrypted pack. The pack is encrypted with the
+        # gateway's *bound* device key, so bind to obtain it, then decrypt.
         if "pack" in received_json:
             encryption_version = await detect_device_encryption(mac_addr, ip_addr, port)
             if encryption_version == 1:
-                cipher = AES.new(GENERIC_GREE_DEVICE_KEY.encode("utf8"), AES.MODE_ECB)
+                device_key = await GetDeviceKey(mac_addr, ip_addr, port)
+                if not device_key:
+                    _LOGGER.error(f"get_subunits_list: could not bind to gateway {mac_addr} (v1)")
+                    return {"list": []}
+                cipher = AES.new(device_key, AES.MODE_ECB)
+                decoded_pack = base64.b64decode(received_json["pack"])
+                decrypted_pack = cipher.decrypt(decoded_pack)
+            elif encryption_version == 2:
+                device_key = await GetDeviceKeyGCM(mac_addr, ip_addr, port)
+                if not device_key:
+                    _LOGGER.error(f"get_subunits_list: could not bind to gateway {mac_addr} (v2)")
+                    return {"list": []}
+                cipher = GetGCMCipher(device_key)
+                decoded_pack = base64.b64decode(received_json["pack"])
+                decrypted_pack = cipher.decrypt(decoded_pack)
+                tag = received_json.get("tag")
+                if tag:
+                    with suppress(Exception):
+                        cipher.verify(base64.b64decode(tag))
             else:
-                cipher = GetGCMCipher(GENERIC_GREE_DEVICE_KEY_GCM)
-            decoded_pack = base64.b64decode(received_json["pack"])
-            decrypted_pack = cipher.decrypt(decoded_pack)
+                _LOGGER.error(f"get_subunits_list: unknown encryption for gateway {mac_addr}")
+                return {"list": []}
+
             decoded_text = decrypted_pack.decode("utf-8", errors="ignore").replace("\x0f", "")
             last_brace = decoded_text.rfind("}")
             if last_brace != -1:
