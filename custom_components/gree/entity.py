@@ -51,6 +51,19 @@ class GreeEntity(Entity):
         self.entity_description = description
         self._set_id()
 
+    @property
+    def _device_id(self) -> str:
+        """Return the per-unit identifier for this entity's device.
+
+        VRF gateways share a single gateway MAC (``_mac_addr``) across all of
+        their indoor units. Using it here would make every unit share the same
+        unique_id (causing entities like the external temperature sensor select
+        to collide/be shared) and collapse all units into one HA device.
+        ``_sub_mac_addr`` is unique per unit; for standalone devices it equals
+        ``_mac_addr`` so behaviour is unchanged.
+        """
+        return getattr(self._device, "_sub_mac_addr", self._device._mac_addr)
+
     def _set_id(self) -> None:
         """Set entity ID and unique ID."""
         if self.entity_description:
@@ -59,16 +72,18 @@ class GreeEntity(Entity):
             elif self.entity_description.icon is not None:
                 self._attr_icon = self.entity_description.icon
 
-            self._attr_unique_id = f"{self._device._mac_addr}_{self.entity_description.key}"
+            self._attr_unique_id = f"{self._device_id}_{self.entity_description.key}"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
         return DeviceInfo(
-            identifiers={(DOMAIN, self._device._mac_addr)},
+            identifiers={(DOMAIN, self._device_id)},
             name=self._device._name,
             manufacturer="Gree",
-            connections={(CONNECTION_NETWORK_MAC, self._device._mac_addr)},
+            connections={(CONNECTION_NETWORK_MAC, self._device._sub_mac_addr)}
+            if getattr(self._device, "_sub_mac_addr", None) == self._device._mac_addr
+            else set(),
         )
 
     @property

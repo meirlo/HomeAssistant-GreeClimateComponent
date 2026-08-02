@@ -757,12 +757,24 @@ class GreeClimate(ClimateEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._mac_addr)},
+        """Return device information.
+
+        Each (sub-)unit must be its own HA device. VRF gateways share a single
+        gateway MAC (``_mac_addr``) across all indoor units, so identifying by
+        the gateway MAC would collapse every unit into one device. Identify by
+        the per-unit ``_sub_mac_addr`` instead. For standalone (non-VRF) devices
+        ``_sub_mac_addr == _mac_addr`` so behaviour is unchanged.
+        """
+        info = DeviceInfo(
+            identifiers={(DOMAIN, self._sub_mac_addr)},
             name=self._name,
             manufacturer="Gree",
         )
+        # For VRF sub-units, link them to their parent gateway device so the UI
+        # shows the topology, and record the physical MAC connection.
+        if self._sub_mac_addr != self._mac_addr:
+            info["via_device"] = (DOMAIN, self._mac_addr)
+        return info
 
     @property
     def outside_temperature(self):
