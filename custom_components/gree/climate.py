@@ -592,6 +592,11 @@ class GreeClimate(ClimateEntity):
             # Set latest status from device
             self._acOptions = self.SetAcOptions(self._acOptions, optionsToFetch, currentValues)
 
+            # Snapshot what the device actually reported this cycle, so we can
+            # confirm pending commands against the *device's* value rather than
+            # our own optimistic overlay.
+            read_values = dict(zip(optionsToFetch, currentValues)) if isinstance(currentValues, list) else {}
+
             # Overwrite status with our choices
             if not (acOptions == {}):
                 self._acOptions = self.SetAcOptions(self._acOptions, acOptions)
@@ -611,8 +616,9 @@ class GreeClimate(ClimateEntity):
                     else:
                         # Command sent successfully: remember these values so a
                         # stale gateway read-back on the next poll(s) doesn't
-                        # revert the UI before the change propagates.
-                        self._pending_options = dict(acOptions)
+                        # revert the UI before the change propagates. Merge with
+                        # any still-unconfirmed options from earlier commands.
+                        self._pending_options.update(acOptions)
                         self._pending_expiry = time.monotonic() + self._pending_ttl
                         # Schedule a quick follow-up read so the UI confirms the
                         # change within a couple of seconds instead of waiting
@@ -623,19 +629,24 @@ class GreeClimate(ClimateEntity):
                 self._firstTimeRun = False
 
             # Re-assert recently commanded values over the (possibly stale)
-            # read-back. Drop each pending key once the device confirms it, and
-            # drop everything once the trust window expires.
+            # read-back. Confirm against the value the DEVICE reported this
+            # cycle (read_values), not our optimistic overlay, so we keep
+            # forcing the commanded value until the gateway actually catches up.
+            # Skip confirmation on the same cycle that just sent the command
+            # (there is no fresh read reflecting it yet).
             if self._pending_options:
                 if time.monotonic() >= self._pending_expiry:
                     self._pending_options = {}
                 else:
+                    just_sent = acOptions != {}
                     still_pending = {}
                     for key, want in self._pending_options.items():
-                        got = self._acOptions.get(key)
-                        # Compare loosely: device values may be int while our
-                        # commanded values are int or numeric strings.
-                        if str(got) == str(want):
-                            continue  # confirmed by device, stop forcing it
+                        device_val = read_values.get(key)
+                        # If the device already reports the commanded value,
+                        # it's confirmed; stop forcing it. Don't confirm on the
+                        # same cycle we sent the command.
+                        if not just_sent and device_val is not None and str(device_val) == str(want):
+                            continue
                         self._acOptions[key] = want
                         still_pending[key] = want
                     self._pending_options = still_pending
