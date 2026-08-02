@@ -324,6 +324,8 @@ async def discover_gree_devices(hass, timeout=5, extra_networks=None, extra_host
     DISCOVERY_MESSAGE = b'{"t":"scan"}'
 
     devices = []
+    gateways: list[dict] = []
+    seen_gateways: set[str] = set()
     seen_device_ids: set[tuple[str, str]] = set()
     sockets: list[tuple[socket.socket, list[str], str]] = []
 
@@ -467,34 +469,21 @@ async def discover_gree_devices(hass, timeout=5, extra_networks=None, extra_host
                                     "model": pack_json.get("model", "gree"),
                                     "version": pack_json.get("ver", ""),
                                 }
-                                # If this is a gateway (has sub-units), fetch
-                                # the sub-device list and expose each unit as a
-                                # separate device. A VRF gateway reports every
-                                # connected indoor unit here, including when it
-                                # only has one.
+                                # If this is a gateway (has sub-units), defer
+                                # fetching its sub-device list until AFTER the
+                                # receive loop. The subList query involves its
+                                # own retries/timeouts; running it inline here
+                                # would block the receive loop and consume the
+                                # discovery time budget, causing other devices'
+                                # broadcast replies to be dropped (e.g. finding
+                                # 3 of 4 units). A VRF gateway reports every
+                                # connected indoor unit, including when it only
+                                # has one.
                                 if sub_cnt > 0:
-                                    try:
-                                        _LOGGER.debug(f"Fetching sub-devices for {mac_addr} (subCnt={sub_cnt})")
-                                        sub_devices = await get_subunits_list(mac_addr, addr[0], BROADCAST_PORT)
-                                        for sub_device in sub_devices.get("list", []):
-                                            sub_mac = sub_device.get("mac", "")
-                                            if sub_mac:
-                                                sub_device_info = {
-                                                    "name": f"{device_info['name']}_{sub_mac[:4]}",
-                                                    "host": addr[0],
-                                                    "port": BROADCAST_PORT,
-                                                    "mac": f"{sub_mac}@{mac_addr}",
-                                                    "brand": device_info["brand"],
-                                                    "model": sub_device.get("mid", device_info["model"]),
-                                                    "version": device_info["version"],
-                                                }
-                                                device_key = (sub_device_info["host"], sub_device_info["mac"])
-                                                if device_key not in seen_device_ids:
-                                                    seen_device_ids.add(device_key)
-                                                    devices.append(sub_device_info)
-                                                    _LOGGER.debug(f"Discovered sub-device: {sub_device_info}")
-                                    except Exception as e:
-                                        _LOGGER.error(f"Error fetching sub-devices for {mac_addr}: {e}")
+                                    if mac_addr not in seen_gateways:
+                                        seen_gateways.add(mac_addr)
+                                        gateways.append(device_info)
+                                        _LOGGER.debug(f"Discovered gateway {mac_addr} (subCnt={sub_cnt}), deferring sub-device fetch")
                                 else:
                                     device_key = (device_info["host"], device_info["mac"])
                                     if device_key not in seen_device_ids:
@@ -513,6 +502,38 @@ async def discover_gree_devices(hass, timeout=5, extra_networks=None, extra_host
         for sock, _, _ in sockets:
             with suppress(Exception):
                 sock.close()
+
+    # Now that the receive loop is done (and no longer racing the discovery
+    # time budget), query each gateway for its sub-devices. These queries run
+    # concurrently to keep discovery fast.
+    if gateways:
+        _LOGGER.debug(f"Fetching sub-devices for {len(gateways)} gateway(s)")
+        results = await asyncio.gather(
+            *(get_subunits_list(gw["mac"], gw["host"], gw["port"]) for gw in gateways),
+            return_exceptions=True,
+        )
+        for gw, sub_result in zip(gateways, results):
+            if isinstance(sub_result, Exception):
+                _LOGGER.error(f"Error fetching sub-devices for {gw['mac']}: {sub_result}")
+                continue
+            for sub_device in sub_result.get("list", []):
+                sub_mac = sub_device.get("mac", "")
+                if not sub_mac:
+                    continue
+                sub_device_info = {
+                    "name": f"{gw['name']}_{sub_mac[:4]}",
+                    "host": gw["host"],
+                    "port": gw["port"],
+                    "mac": f"{sub_mac}@{gw['mac']}",
+                    "brand": gw["brand"],
+                    "model": sub_device.get("mid", gw["model"]),
+                    "version": gw["version"],
+                }
+                device_key = (sub_device_info["host"], sub_device_info["mac"])
+                if device_key not in seen_device_ids:
+                    seen_device_ids.add(device_key)
+                    devices.append(sub_device_info)
+                    _LOGGER.debug(f"Discovered sub-device: {sub_device_info}")
 
     _LOGGER.debug(f"Discovery completed, found {len(devices)} devices")
     return devices
