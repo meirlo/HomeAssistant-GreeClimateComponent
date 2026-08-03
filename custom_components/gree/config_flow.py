@@ -30,6 +30,9 @@ from .const import (
     CONF_EXTRA_SCAN_NETWORKS,
     CONF_FAN_MODES,
     CONF_HVAC_MODES,
+    CONF_MODEL,
+    CONF_SW_VERSION,
+    CONF_BRAND,
     CONF_SWING_HORIZONTAL_MODES,
     CONF_SWING_MODES,
     CONF_TEMP_SENSOR_OFFSET,
@@ -198,6 +201,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_PORT: self._selected_device["port"],
                 CONF_ENCRYPTION_KEY: "",
                 CONF_ENCRYPTION_VERSION: self._selected_device["encryption_version"],
+                # Persist discovery metadata so the device_info panel can show
+                # model / firmware / brand without re-discovering at runtime.
+                CONF_MODEL: self._selected_device.get("model", ""),
+                CONF_SW_VERSION: self._selected_device.get("version", ""),
+                CONF_BRAND: self._selected_device.get("brand", ""),
             }
 
             # Test the connection

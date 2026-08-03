@@ -27,7 +27,7 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_PORT,
 )
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.event import async_call_later
 
 # Local imports
@@ -54,6 +54,9 @@ from .const import (
     CONF_ENCRYPTION_VERSION,
     CONF_DISABLE_AVAILABLE_CHECK,
     CONF_TEMP_SENSOR_OFFSET,
+    CONF_MODEL,
+    CONF_SW_VERSION,
+    CONF_BRAND,
 )
 from .gree_protocol import Pad, FetchResult, GetDeviceKey, GetGCMCipher, EncryptGCM, GetDeviceKeyGCM
 from .helpers import TempOffsetResolver, gree_f_to_c, gree_c_to_f, encode_temp_c, decode_temp_c
@@ -86,6 +89,9 @@ async def create_gree_device(hass, config):
     encryption_version = config.get(CONF_ENCRYPTION_VERSION, 1)
     disable_available_check = config.get(CONF_DISABLE_AVAILABLE_CHECK, False)
     temp_sensor_offset = config.get(CONF_TEMP_SENSOR_OFFSET)
+    model = config.get(CONF_MODEL)
+    sw_version = config.get(CONF_SW_VERSION)
+    brand = config.get(CONF_BRAND)
 
     return GreeClimate(
         hass,
@@ -102,6 +108,9 @@ async def create_gree_device(hass, config):
         encryption_key,
         uid,
         temp_sensor_offset,
+        model=model,
+        sw_version=sw_version,
+        brand=brand,
     )
 
 
@@ -153,11 +162,20 @@ class GreeClimate(ClimateEntity):
         encryption_key=None,
         uid=None,
         temp_sensor_offset=None,
+        model=None,
+        sw_version=None,
+        brand=None,
     ):
         _LOGGER.info(f"{name}: Initializing Gree climate device")
 
         self.hass = hass
         self._name = name
+        # Discovery metadata for the device_info panel.
+        self._model = model or None
+        self._sw_version = sw_version or None
+        self._brand = brand or None
+        # Firmware/hardware id (firmwareCode) fetched from the module at runtime.
+        self._hid = None
         self._ip_addr = ip_addr
         self._port = port
         mac_addr_str = mac_addr.decode("utf-8").lower()
@@ -491,6 +509,25 @@ class GreeClimate(ClimateEntity):
     async def SyncState(self, acOptions={}):
         # Fetch current settings from HVAC
         _LOGGER.debug(f"{self._name}: Starting device state sync")
+
+        # One-time: fetch the module's hardware id (hid). It embeds the
+        # firmwareCode + firmware version, e.g. "362001065279V1.22", which is
+        # useful for identifying the WiFi module and is surfaced in device_info.
+        if self._hid is None:
+            try:
+                hid = await self.GreeGetValues(["hid"])
+            except Exception:
+                _LOGGER.debug(f"{self._name}: Could not fetch hid. Retrying at next update()")
+            else:
+                # GreeGetValues returns a scalar for a single column.
+                if isinstance(hid, list):
+                    hid = hid[0] if hid else ""
+                if hid:
+                    self._hid = str(hid)
+                    _LOGGER.info(f"{self._name}: Module hid (firmwareCode+ver): {self._hid}")
+                else:
+                    # Mark as attempted-but-empty so we don't retry forever.
+                    self._hid = ""
 
         if self._has_temp_sensor is None:
             _LOGGER.debug("Attempt to check whether device has an built-in temperature sensor")
@@ -845,12 +882,22 @@ class GreeClimate(ClimateEntity):
         info = DeviceInfo(
             identifiers={(DOMAIN, self._sub_mac_addr)},
             name=self._name,
-            manufacturer="Gree",
+            manufacturer=(self._brand or "Gree").capitalize(),
+            model=self._model or None,
+            sw_version=self._sw_version or None,
+            serial_number=self._sub_mac_addr,
         )
+        # Surface the module firmwareCode/version (hid) as hardware version.
+        if getattr(self, "_hid", None):
+            info["hw_version"] = self._hid
         # For VRF sub-units, link them to their parent gateway device so the UI
-        # shows the topology, and record the physical MAC connection.
+        # shows the topology. Only standalone/gateway devices record the physical
+        # network-MAC connection (sharing it across sub-units would make HA merge
+        # them back into one device).
         if self._sub_mac_addr != self._mac_addr:
             info["via_device"] = (DOMAIN, self._mac_addr)
+        else:
+            info["connections"] = {(CONNECTION_NETWORK_MAC, self._mac_addr)}
         return info
 
     @property

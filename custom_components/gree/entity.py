@@ -76,15 +76,30 @@ class GreeEntity(Entity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
+        """Return device information.
+
+        Mirrors the fields set by the climate entity so all entities of a unit
+        share one fully-populated HA device (model / firmware / MAC).
+        """
+        device = self._device
+        is_standalone = getattr(device, "_sub_mac_addr", None) == device._mac_addr
+        info = DeviceInfo(
             identifiers={(DOMAIN, self._device_id)},
-            name=self._device._name,
-            manufacturer="Gree",
-            connections={(CONNECTION_NETWORK_MAC, self._device._sub_mac_addr)}
-            if getattr(self._device, "_sub_mac_addr", None) == self._device._mac_addr
-            else set(),
+            name=device._name,
+            manufacturer=(getattr(device, "_brand", None) or "Gree").capitalize(),
+            model=getattr(device, "_model", None) or None,
+            sw_version=getattr(device, "_sw_version", None) or None,
+            serial_number=self._device_id,
         )
+        if getattr(device, "_hid", None):
+            info["hw_version"] = device._hid
+        # Only standalone/gateway devices record the physical MAC connection to
+        # avoid HA merging VRF sub-units back into a single device.
+        if is_standalone:
+            info["connections"] = {(CONNECTION_NETWORK_MAC, device._mac_addr)}
+        else:
+            info["via_device"] = (DOMAIN, device._mac_addr)
+        return info
 
     @property
     def available(self) -> bool:

@@ -11,6 +11,10 @@ CONF_DISABLE_AVAILABLE_CHECK  = 'disable_available_check'
 CONF_TEMP_SENSOR_OFFSET = 'temp_sensor_offset'
 CONF_EXTRA_SCAN_NETWORKS = 'extra_scan_networks'
 CONF_EXTRA_SCAN_HOSTS = 'extra_scan_hosts'
+# Discovery metadata persisted for the device_info panel.
+CONF_MODEL = 'model'
+CONF_SW_VERSION = 'sw_version'
+CONF_BRAND = 'brand'
 
 MAX_UNICAST_SCAN_HOSTS = 65536
 
