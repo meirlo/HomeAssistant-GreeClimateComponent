@@ -769,9 +769,13 @@ async def get_subunits_list(mac_addr, ip_addr, port):
         payload = f'{{"cid":"app","i":0,"pack":"{pack}","t":"pack","tcid":"{mac_addr}","uid":0}}'
         device_units = await _subunits_send_ecb(ip_addr, port, payload, device_key)
 
-        # Generic-key form: i:1 / t:subList -> response encrypted with generic key.
+        # Generic-key form: i:1 / t:subList. The gateway ignores the request
+        # pack for this form (a probe showed device-, generic- and even
+        # random-key packs all get the same reply), and answers encrypted with
+        # the generic key. Encrypt the request with the generic key too, to
+        # match how standalone units and the app behave.
         inner_fb = f'{{"mac":"{mac_addr}","i":1}}'
-        pack_fb = base64.b64encode(AES.new(device_key, AES.MODE_ECB).encrypt(Pad(inner_fb).encode("utf8"))).decode("utf-8")
+        pack_fb = base64.b64encode(AES.new(generic_key, AES.MODE_ECB).encrypt(Pad(inner_fb).encode("utf8"))).decode("utf-8")
         payload_fb = f'{{"cid":"app","i":1,"pack":"{pack_fb}","t":"subList","tcid":"{mac_addr}","uid":0}}'
         generic_units = await _subunits_send_ecb(ip_addr, port, payload_fb, generic_key)
 
